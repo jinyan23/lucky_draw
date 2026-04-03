@@ -12,6 +12,8 @@ import pandas as pd
 from flask import Flask, jsonify, render_template, request
 
 APP_DIR = Path(__file__).resolve().parent
+PARTICIPANTS_XLSX = APP_DIR / "participant.xlsx"
+PRIZES_XLSX = APP_DIR / "prize.xlsx"
 OUTPUT_DIR = APP_DIR / "output"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -19,10 +21,11 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 @dataclass
 class LuckyDrawState:
     participants_remaining: list[dict[str, str]] = field(default_factory=list)
-    prizes: list[dict[str, str]] = field(default_factory=list)
+    prizes: list[dict[str, Any]] = field(default_factory=list)
     results: list[dict[str, Any]] = field(default_factory=list)
     drawn_participants_set: set[str] = field(default_factory=set)
     session_csv_path: Path | None = None
+    load_error: str | None = None
 
 
 app = Flask(__name__)
@@ -48,13 +51,29 @@ def normalize_value(value: Any) -> str:
     return str(value).strip()
 
 
-def validate_xlsx_filename(filename: str | None) -> bool:
-    return bool(filename and filename.lower().endswith(".xlsx"))
+def parse_positive_int(value: Any, field_name: str) -> int:
+    normalized = normalize_value(value)
+    if not normalized:
+        raise ValueError(f"{field_name} must be a positive integer")
 
-
-def parse_participants(file_storage) -> list[dict[str, str]]:
     try:
-        df = pd.read_excel(file_storage)
+        number = float(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a positive integer") from exc
+
+    if not number.is_integer():
+        raise ValueError(f"{field_name} must be a positive integer")
+
+    parsed = int(number)
+    if parsed < 1:
+        raise ValueError(f"{field_name} must be at least 1")
+
+    return parsed
+
+
+def parse_participants(file_source: Any) -> list[dict[str, str]]:
+    try:
+        df = pd.read_excel(file_source)
     except Exception as exc:
         raise ValueError(f"Failed to read participants file: {exc}") from exc
 
@@ -84,30 +103,35 @@ def parse_participants(file_storage) -> list[dict[str, str]]:
     return parsed
 
 
-def parse_prizes(file_storage) -> list[dict[str, str]]:
+def parse_prizes(file_source: Any) -> list[dict[str, Any]]:
     try:
-        df = pd.read_excel(file_storage)
+        df = pd.read_excel(file_source)
     except Exception as exc:
         raise ValueError(f"Failed to read prizes file: {exc}") from exc
 
     df = normalize_columns(df)
-    required = {"prize_rank", "prize"}
+    required = {"prize_rank", "prize", "winner_num"}
     if not required.issubset(df.columns):
-        raise ValueError("Prizes file must contain columns: prize_rank, prize")
+        raise ValueError("Prizes file must contain columns: prize_rank, prize, winner_num")
 
-    parsed: list[dict[str, str]] = []
-    for idx, row in df.iterrows():
+    parsed: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
         prize_rank = normalize_value(row.get("prize_rank"))
         prize = normalize_value(row.get("prize"))
-        if not prize_rank and not prize:
+        winner_num_value = row.get("winner_num")
+        winner_num_text = normalize_value(winner_num_value)
+
+        if not prize_rank and not prize and not winner_num_text:
             continue
-        if not prize_rank or not prize:
-            raise ValueError("Prize rows must have non-empty prize_rank and prize")
+        if not prize_rank or not prize or not winner_num_text:
+            raise ValueError("Prize rows must have non-empty prize_rank, prize, and winner_num")
+
         parsed.append(
             {
                 "prize_id": str(len(parsed) + 1),
                 "prize_rank": prize_rank,
                 "prize": prize,
+                "winner_num": parse_positive_int(winner_num_value, f"winner_num for {prize_rank} - {prize}"),
             }
         )
 
@@ -132,7 +156,7 @@ def append_rows_to_csv(csv_path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def get_prize_by_id(prize_id: str) -> dict[str, str] | None:
+def get_prize_by_id(prize_id: str) -> dict[str, Any] | None:
     for prize in state.prizes:
         if prize["prize_id"] == str(prize_id):
             return prize
@@ -154,6 +178,59 @@ def build_animation_pool(size: int) -> list[str]:
     return random.sample(names, sample_size)
 
 
+def clear_state(error_message: str | None = None) -> None:
+    state.participants_remaining = []
+    state.prizes = []
+    state.results = []
+    state.drawn_participants_set = set()
+    state.session_csv_path = None
+    state.load_error = error_message
+
+
+def load_backend_workbooks() -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    if not PARTICIPANTS_XLSX.exists():
+        raise ValueError(f"Missing backend file: {PARTICIPANTS_XLSX.name}")
+    if not PRIZES_XLSX.exists():
+        raise ValueError(f"Missing backend file: {PRIZES_XLSX.name}")
+
+    participants = parse_participants(PARTICIPANTS_XLSX)
+    prizes = parse_prizes(PRIZES_XLSX)
+    return participants, prizes
+
+
+def initialize_state_from_backend() -> None:
+    participants, prizes = load_backend_workbooks()
+    state.participants_remaining = participants
+    state.prizes = prizes
+    state.results = []
+    state.drawn_participants_set = set()
+    state.session_csv_path = create_session_csv()
+    state.load_error = None
+
+
+def backend_not_ready_message() -> str:
+    if state.load_error:
+        return f"Could not load participant.xlsx and prize.xlsx: {state.load_error}"
+    return "participant.xlsx and prize.xlsx are not ready on the backend"
+
+
+@app.before_request
+def ensure_backend_state_loaded():
+    if state.session_csv_path is not None and state.prizes:
+        return
+
+    with state_lock:
+        if state.session_csv_path is not None and state.prizes:
+            return
+
+        try:
+            initialize_state_from_backend()
+        except ValueError as exc:
+            clear_state(str(exc))
+        except Exception:
+            clear_state("Unexpected error while reading backend workbooks")
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -161,50 +238,15 @@ def index():
 
 @app.get("/api/state")
 def get_state():
+    is_ready = state.load_error is None and state.session_csv_path is not None and bool(state.prizes)
     return jsonify(
         {
-            "ok": True,
+            "ok": is_ready,
+            "message": None if is_ready else backend_not_ready_message(),
             "prizes": state.prizes,
             "remaining_count": len(state.participants_remaining),
             "results": state.results,
             "csv_path": str(state.session_csv_path.relative_to(APP_DIR)) if state.session_csv_path else None,
-        }
-    )
-
-
-@app.post("/api/upload")
-def upload_files():
-    participants_file = request.files.get("participants_file")
-    prizes_file = request.files.get("prizes_file")
-
-    if participants_file is None or prizes_file is None:
-        return error_response("Both participants_file and prizes_file are required", 400)
-
-    if not validate_xlsx_filename(participants_file.filename) or not validate_xlsx_filename(prizes_file.filename):
-        return error_response("Both files must be .xlsx", 400)
-
-    try:
-        participants = parse_participants(participants_file)
-        prizes = parse_prizes(prizes_file)
-    except ValueError as exc:
-        return error_response(str(exc), 400)
-    except Exception:
-        return error_response("Unexpected error while reading uploaded files", 500)
-
-    with state_lock:
-        state.participants_remaining = participants
-        state.prizes = prizes
-        state.results = []
-        state.drawn_participants_set = set()
-        state.session_csv_path = create_session_csv()
-
-    return jsonify(
-        {
-            "ok": True,
-            "message": "Files uploaded successfully",
-            "prizes": state.prizes,
-            "remaining_count": len(state.participants_remaining),
-            "csv_path": str(state.session_csv_path.relative_to(APP_DIR)),
         }
     )
 
@@ -223,7 +265,7 @@ def add_participant():
 
     with state_lock:
         if state.session_csv_path is None or not state.prizes:
-            return error_response("Please upload participants and prizes first", 400)
+            return error_response(backend_not_ready_message(), 400)
 
         if participant_name in state.drawn_participants_set:
             return error_response("Participant has already won and cannot be re-added", 409)
@@ -249,28 +291,20 @@ def draw_winners():
         return error_response("JSON body is required", 400)
 
     prize_id = str(payload.get("prize_id", "")).strip()
-    draw_count_raw = payload.get("draw_count")
-
-    try:
-        draw_count = int(draw_count_raw)
-    except (TypeError, ValueError):
-        return error_response("draw_count must be an integer", 400)
 
     with state_lock:
         if state.session_csv_path is None or not state.prizes:
-            return error_response("Please upload participants and prizes first", 400)
+            return error_response(backend_not_ready_message(), 400)
 
         prize = get_prize_by_id(prize_id)
         if prize is None:
             return error_response("Invalid prize_id", 400)
 
-        if draw_count < 1:
-            return error_response("draw_count must be at least 1", 400)
-
+        draw_count = int(prize["winner_num"])
         remaining_count = len(state.participants_remaining)
         if draw_count > remaining_count:
             return error_response(
-                f"Not enough participants remaining. Requested {draw_count}, available {remaining_count}",
+                f"Not enough participants remaining. Prize requires {draw_count}, available {remaining_count}",
                 409,
             )
 
@@ -321,6 +355,7 @@ def draw_winners():
             {
                 "ok": True,
                 "message": "Draw completed",
+                "winner_num": draw_count,
                 "animation_pool": animation_pool,
                 "final_winners": final_winners,
                 "remaining_count": len(state.participants_remaining),
@@ -338,7 +373,7 @@ def redraw_winner():
 
     with state_lock:
         if state.session_csv_path is None or not state.prizes:
-            return error_response("Please upload participants and prizes first", 400)
+            return error_response(backend_not_ready_message(), 400)
 
         prize = get_prize_by_id(prize_id)
         if prize is None:

@@ -9,73 +9,38 @@
   <body>
     <canvas id="confetti-canvas"></canvas>
     <main class="container">
-      <h1>Lucky Draw Application</h1>
-
-      <div class="page-layout">
-        <aside class="side-panel">
-          <section class="side-panel-section">
-            <h2 id="current-prize-header">Current Prize: -</h2>
-            <div class="controls">
-              <div class="field-row">
-                <label for="prize-select">Prize</label>
-                <select id="prize-select" disabled></select>
-              </div>
-              <div class="field-row">
-                <label for="draw-count">Number of participants to draw</label>
-                <input id="draw-count" type="number" min="1" value="1" disabled>
-              </div>
-            </div>
-            <p id="remaining-count">Remaining participants: 0</p>
-          </section>
-
-          <section class="side-panel-section">
-            <h2>Upload Files</h2>
-            <form id="upload-form">
-              <div class="upload-grid">
-                <div class="field-row">
-                  <label for="participants-file">Participants (.xlsx)</label>
-                  <input id="participants-file" name="participants_file" type="file" accept=".xlsx" required>
-                </div>
-                <div class="field-row">
-                  <label for="prizes-file">Prizes (.xlsx)</label>
-                  <input id="prizes-file" name="prizes_file" type="file" accept=".xlsx" required>
-                </div>
-              </div>
-              <button id="upload-btn" type="submit">Upload</button>
-            </form>
-            <div class="field-row adhoc-field">
-              <label for="adhoc-participant">Add Participant (Ad-hoc)</label>
-              <div class="adhoc-input-row">
-                <input id="adhoc-participant" type="text" placeholder="Enter participant name">
-              </div>
-              <button id="add-participant-btn" type="button" disabled>Add Participant</button>
-            </div>
-            <p id="adhoc-status" class="status"></p>
-            <p id="upload-status" class="status"></p>
-          </section>
-        </aside>
-
-        <section class="main-content">
-          <section class="card action-card">
-            <div class="action-top">
-              <div id="draw-drum" class="draw-drum" aria-hidden="true"></div>
-              <p class="action-tagline">Spin the drum and reveal the lucky winners</p>
-            </div>
-            <div class="button-row large-buttons">
-              <button id="draw-btn" type="button" disabled>Draw</button>
-              <button id="redraw-btn" type="button" disabled>Redraw</button>
-            </div>
-            <p id="action-status" class="status"></p>
-          </section>
-
-          <section class="card results-card">
-            <h2 id="results-header">- (0 winners)</h2>
-            <table id="results-table">
-              <tbody id="results-body"></tbody>
-            </table>
-          </section>
+      <header class="page-header">
+        <section class="card title-panel" aria-label="Application title">
+          <h1>🌸 Lucky Draw 🌸</h1>
         </section>
-      </div>
+
+        <section class="card participant-panel" aria-label="Add participants">
+          <label for="adhoc-participant" class="sr-only">Participant name</label>
+          <div class="participant-panel-row">
+            <input id="adhoc-participant" type="text" placeholder="Name">
+            <button id="add-participant-btn" type="button" disabled>Add</button>
+          </div>
+          <p id="adhoc-status" class="status"></p>
+        </section>
+      </header>
+
+      <section class="main-content">
+        <section class="card action-card">
+          <div class="button-row action-buttons">
+            <button id="next-btn" type="button" disabled>Next</button>
+            <button id="draw-btn" type="button" disabled>Draw</button>
+            <button id="redraw-btn" type="button" disabled>Redraw</button>
+          </div>
+          <p id="action-status" class="status"></p>
+        </section>
+
+        <section class="card results-card">
+          <h2 id="results-header">- (0 winners)</h2>
+          <table id="results-table">
+            <tbody id="results-body"></tbody>
+          </table>
+        </section>
+      </section>
     </main>
 
     <script src="{{ url_for('static', filename='app.js') }}"></script>

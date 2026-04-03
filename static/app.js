@@ -1,20 +1,12 @@
-const uploadForm = document.getElementById("upload-form");
-const participantsFileInput = document.getElementById("participants-file");
-const prizesFileInput = document.getElementById("prizes-file");
-const uploadStatus = document.getElementById("upload-status");
 const adhocStatus = document.getElementById("adhoc-status");
 const adhocParticipantInput = document.getElementById("adhoc-participant");
 const addParticipantButton = document.getElementById("add-participant-btn");
 const actionStatus = document.getElementById("action-status");
-const prizeSelect = document.getElementById("prize-select");
-const currentPrizeHeader = document.getElementById("current-prize-header");
+const nextButton = document.getElementById("next-btn");
 const resultsHeader = document.getElementById("results-header");
-const drawCountInput = document.getElementById("draw-count");
 const drawButton = document.getElementById("draw-btn");
 const redrawButton = document.getElementById("redraw-btn");
-const drawDrum = document.getElementById("draw-drum");
 const confettiCanvas = document.getElementById("confetti-canvas");
-const remainingCountElement = document.getElementById("remaining-count");
 const resultsBody = document.getElementById("results-body");
 
 let appState = {
@@ -23,7 +15,7 @@ let appState = {
   remainingCount: 0,
   csvPath: null,
   isBusy: false,
-  displayPrizeId: null,
+  currentPrizeIndex: -1,
 };
 
 let confettiCtx = null;
@@ -35,19 +27,23 @@ function setStatus(element, message, isError = false) {
   element.classList.toggle("error", isError);
 }
 
-function setControlsEnabled(enabled) {
-  prizeSelect.disabled = !enabled || appState.isBusy;
-  drawCountInput.disabled = !enabled || appState.isBusy;
-  drawButton.disabled = !enabled || appState.isBusy;
-  redrawButton.disabled = !enabled || appState.isBusy;
-  addParticipantButton.disabled = !enabled || appState.isBusy;
+function hasActivePrize() {
+  return appState.prizes.length > 0 && appState.currentPrizeIndex >= 0 && appState.currentPrizeIndex < appState.prizes.length;
 }
 
-function setDrumSpinning(isSpinning) {
-  if (!drawDrum) {
-    return;
+function getSelectedPrize() {
+  if (!hasActivePrize()) {
+    return null;
   }
-  drawDrum.classList.toggle("spinning", isSpinning);
+  return appState.prizes[appState.currentPrizeIndex];
+}
+
+function setControlsEnabled(enabled) {
+  const allowActions = enabled && !appState.isBusy;
+  nextButton.disabled = !allowActions || appState.prizes.length < 2 || appState.currentPrizeIndex <= 0;
+  drawButton.disabled = !allowActions;
+  redrawButton.disabled = !allowActions;
+  addParticipantButton.disabled = !allowActions;
 }
 
 function initConfettiCanvas() {
@@ -129,25 +125,6 @@ function launchConfetti(durationMs = 2200) {
 
 function updateRemainingCount(value) {
   appState.remainingCount = value;
-  remainingCountElement.textContent = `Remaining participants: ${value}`;
-}
-
-function getPrizeById(prizeId) {
-  return appState.prizes.find((item) => item.prize_id === prizeId) || null;
-}
-
-function getSelectedPrize() {
-  return getPrizeById(prizeSelect.value);
-}
-
-function getDisplayedPrize() {
-  if (appState.displayPrizeId) {
-    const displayed = getPrizeById(appState.displayPrizeId);
-    if (displayed) {
-      return displayed;
-    }
-  }
-  return getSelectedPrize();
 }
 
 function getPrizeKey(prizeRank, prize) {
@@ -172,30 +149,13 @@ function formatWinnerName(name) {
 function updateHeaders() {
   const selected = getSelectedPrize();
   if (!selected) {
-    currentPrizeHeader.textContent = "Current Prize: -";
-  } else {
-    currentPrizeHeader.textContent = `Current Prize: ${selected.prize_rank} - ${selected.prize}`;
-  }
-
-  const displayed = getDisplayedPrize();
-  if (!displayed) {
     resultsHeader.textContent = "- (0 winners)";
     return;
   }
 
-  const prizeLabel = `${displayed.prize_rank} - ${displayed.prize}`;
-  const winnersCount = getResultsForPrize(displayed).length;
-  resultsHeader.textContent = `${prizeLabel} (${winnersCount} winners)`;
-}
-
-function renderPrizes(prizes) {
-  prizeSelect.innerHTML = "";
-  prizes.forEach((prize) => {
-    const option = document.createElement("option");
-    option.value = prize.prize_id;
-    option.textContent = `${prize.prize_rank} - ${prize.prize}`;
-    prizeSelect.appendChild(option);
-  });
+  const prizeLabel = `${selected.prize_rank} - ${selected.prize}`;
+  const winnerLabel = Number(selected.winner_num) === 1 ? "winner" : "winners";
+  resultsHeader.textContent = `${prizeLabel} (${selected.winner_num} ${winnerLabel})`;
 }
 
 function appendResultRow(participant, rotating = false, reveal = false) {
@@ -216,13 +176,14 @@ function appendResultRow(participant, rotating = false, reveal = false) {
 
 function renderDisplayedPrizeResults() {
   resultsBody.innerHTML = "";
-  const displayedPrize = getDisplayedPrize();
-  const rows = getResultsForPrize(displayedPrize);
+  const selectedPrize = getSelectedPrize();
+  const rows = getResultsForPrize(selectedPrize);
   rows.forEach((row) => {
     const baseName = row.redraw ? `${row.participant} (R)` : row.participant;
     appendResultRow(formatWinnerName(baseName), false);
   });
   updateHeaders();
+  setControlsEnabled(appState.prizes.length > 0);
 }
 
 function withBusyState(fn) {
@@ -244,31 +205,39 @@ function withBusyState(fn) {
 async function refreshState() {
   const response = await fetch("/api/state");
   const data = await response.json();
-  if (!data.ok) {
-    return;
-  }
 
   appState.prizes = data.prizes || [];
   appState.results = data.results || [];
   appState.csvPath = data.csv_path || null;
   updateRemainingCount(data.remaining_count || 0);
 
-  if (appState.prizes.length > 0) {
-    renderPrizes(appState.prizes);
-    if (!appState.displayPrizeId || !getPrizeById(appState.displayPrizeId)) {
-      appState.displayPrizeId = appState.prizes[0].prize_id;
-    }
-    setControlsEnabled(true);
+  if (!response.ok || !data.ok) {
+    appState.currentPrizeIndex = -1;
+    setControlsEnabled(false);
+    renderDisplayedPrizeResults();
+    setStatus(actionStatus, data.message || "Could not load backend workbooks", true);
+    return;
+  }
+
+  if (appState.prizes.length === 0) {
+    appState.currentPrizeIndex = -1;
+    setControlsEnabled(false);
+    renderDisplayedPrizeResults();
+    return;
+  }
+
+  if (appState.currentPrizeIndex < 0 || appState.currentPrizeIndex >= appState.prizes.length) {
+    appState.currentPrizeIndex = appState.prizes.length - 1;
   }
 
   renderDisplayedPrizeResults();
 }
 
-function buildRollingName(pool, index, tick) {
+function buildRollingName(pool) {
   if (!pool || pool.length === 0) {
     return "...";
   }
-  const pointer = (tick + index) % pool.length;
+  const pointer = Math.floor(Math.random() * pool.length);
   return pool[pointer];
 }
 
@@ -279,31 +248,26 @@ async function runPhasedRotation(renderTick) {
   const slowStepMs = 200;
   let tick = 0;
 
-  setDrumSpinning(true);
-  try {
-    await new Promise((resolve) => {
-      const fastInterval = setInterval(() => {
+  await new Promise((resolve) => {
+    const fastInterval = setInterval(() => {
+      tick += 1;
+      renderTick(tick);
+    }, fastStepMs);
+
+    setTimeout(() => {
+      clearInterval(fastInterval);
+
+      const slowInterval = setInterval(() => {
         tick += 1;
         renderTick(tick);
-      }, fastStepMs);
+      }, slowStepMs);
 
       setTimeout(() => {
-        clearInterval(fastInterval);
-
-        const slowInterval = setInterval(() => {
-          tick += 1;
-          renderTick(tick);
-        }, slowStepMs);
-
-        setTimeout(() => {
-          clearInterval(slowInterval);
-          resolve();
-        }, slowDurationMs);
-      }, fastDurationMs);
-    });
-  } finally {
-    setDrumSpinning(false);
-  }
+        clearInterval(slowInterval);
+        resolve();
+      }, slowDurationMs);
+    }, fastDurationMs);
+  });
 }
 
 async function runDrawAnimation({ slots, animationPool, finalWinners }) {
@@ -316,7 +280,7 @@ async function runDrawAnimation({ slots, animationPool, finalWinners }) {
 
   await runPhasedRotation((tick) => {
     rows.forEach((row, idx) => {
-      row.children[0].textContent = buildRollingName(animationPool, idx, tick);
+      row.children[0].textContent = buildRollingName(animationPool);
     });
   });
 
@@ -335,7 +299,7 @@ async function runRedrawAnimation({ animationPool, finalWinner }) {
   const row = appendResultRow("...", true);
 
   await runPhasedRotation((tick) => {
-    row.children[0].textContent = buildRollingName(animationPool, 0, tick);
+    row.children[0].textContent = buildRollingName(animationPool);
   });
 
   row.classList.remove("rotating");
@@ -381,53 +345,13 @@ adhocParticipantInput.addEventListener("keydown", (event) => {
   }
 });
 
-uploadForm.addEventListener(
-  "submit",
-  withBusyState(async (event) => {
-    event.preventDefault();
-    setStatus(uploadStatus, "", false);
-    setStatus(actionStatus, "", false);
-
-    if (!participantsFileInput.files[0] || !prizesFileInput.files[0]) {
-      setStatus(uploadStatus, "Please select both .xlsx files", true);
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("participants_file", participantsFileInput.files[0]);
-    formData.append("prizes_file", prizesFileInput.files[0]);
-
-    const response = await fetch("/api/upload", {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await response.json();
-    if (!response.ok || !data.ok) {
-      setStatus(uploadStatus, data.message || "Upload failed", true);
-      return;
-    }
-
-    appState.prizes = data.prizes || [];
-    appState.results = [];
-    appState.csvPath = data.csv_path;
-    appState.displayPrizeId = appState.prizes.length > 0 ? appState.prizes[0].prize_id : null;
-
-    renderPrizes(appState.prizes);
-    updateRemainingCount(data.remaining_count || 0);
-    renderDisplayedPrizeResults();
-    setControlsEnabled(true);
-
-    setStatus(
-      uploadStatus,
-      `Files loaded. Let the celebration begin! CSV: ${appState.csvPath}`,
-      false
-    );
-  })
-);
-
-prizeSelect.addEventListener("change", () => {
-  updateHeaders();
+nextButton.addEventListener("click", () => {
+  if (appState.isBusy || appState.currentPrizeIndex <= 0) {
+    return;
+  }
+  setStatus(actionStatus, "", false);
+  appState.currentPrizeIndex -= 1;
+  renderDisplayedPrizeResults();
 });
 
 drawButton.addEventListener(
@@ -437,18 +361,22 @@ drawButton.addEventListener(
 
     const selectedPrize = getSelectedPrize();
     if (!selectedPrize) {
-      setStatus(actionStatus, "Please select a prize", true);
+      setStatus(actionStatus, "No prize is available", true);
       return;
     }
 
-    const drawCount = Number(drawCountInput.value);
+    const drawCount = Number(selectedPrize.winner_num);
     if (!Number.isInteger(drawCount) || drawCount < 1) {
-      setStatus(actionStatus, "Draw count must be an integer >= 1", true);
+      setStatus(actionStatus, "winner_num in prize.xlsx must be an integer >= 1", true);
       return;
     }
 
     if (drawCount > appState.remainingCount) {
-      setStatus(actionStatus, "Draw count exceeds remaining participants", true);
+      setStatus(
+        actionStatus,
+        `Prize requires ${drawCount} winners, but only ${appState.remainingCount} participants remain`,
+        true
+      );
       return;
     }
 
@@ -457,7 +385,6 @@ drawButton.addEventListener(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         prize_id: selectedPrize.prize_id,
-        draw_count: drawCount,
       }),
     });
 
@@ -466,8 +393,6 @@ drawButton.addEventListener(
       setStatus(actionStatus, data.message || "Draw failed", true);
       return;
     }
-
-    appState.displayPrizeId = selectedPrize.prize_id;
 
     await runDrawAnimation({
       slots: drawCount,
@@ -497,7 +422,7 @@ redrawButton.addEventListener(
 
     const selectedPrize = getSelectedPrize();
     if (!selectedPrize) {
-      setStatus(actionStatus, "Please select a prize", true);
+      setStatus(actionStatus, "No prize is available", true);
       return;
     }
 
@@ -518,8 +443,6 @@ redrawButton.addEventListener(
       return;
     }
 
-    appState.displayPrizeId = selectedPrize.prize_id;
-
     await runRedrawAnimation({
       animationPool: data.animation_pool,
       finalWinner: data.final_winner,
@@ -539,7 +462,7 @@ redrawButton.addEventListener(
 );
 
 refreshState().catch(() => {
-  setStatus(uploadStatus, "Could not load the celebration state", true);
+  setStatus(actionStatus, "Could not load the celebration state", true);
 });
 
 initConfettiCanvas();
